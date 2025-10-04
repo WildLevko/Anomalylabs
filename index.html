@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Аномалия Labs — Досье</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- allow Google Translate to work programmatically; pageLanguage is ru -->
+  <meta name="google" content="notranslate">
+</head>
+<body>
+  <div class="bg-animated" aria-hidden></div>
+
+  <header>
+    <div class="topbar">
+      <div class="brand">
+        <div class="logo" aria-hidden>
+          <svg width="56" height="56" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="lg" x1="0" x2="1">
+                <stop offset="0" stop-color="#b400ff"/>
+                <stop offset="1" stop-color="#00d4ff"/>
+              </linearGradient>
+              <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="3.5" result="blur"/>
+                <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+            </defs>
+            <rect rx="18" width="100" height="100" fill="url(#lg)" opacity="0.95" filter="url(#glow)"/>
+            <g fill="#ffffff" font-family="Inter, sans-serif" font-weight="700">
+              <text x="50%" y="52%" dominant-baseline="middle" text-anchor="middle" font-size="42" fill="#0b0b10">AL</text>
+            </g>
+          </svg>
+        </div>
+
+        <div>
+          <h1 id="siteTitle">Аномалия Labs</h1>
+          <p class="small" id="siteTag">Досье по аномалиям — архивы и репортажи</p>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div class="search">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.4" d="M21 21l-4.35-4.35"/><circle cx="11" cy="11" r="6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <input id="search" placeholder="Поиск..." />
+        </div>
+        <button class="btn" id="filterToggle">Фильтры</button>
+        <button class="btn" id="settingsBtn">Настройки</button>
+        <button class="btn" id="addPostBtn">Добавить пост</button>
+      </div>
+    </div>
+
+    <div id="filtersPanel" class="filtersPanel hidden" aria-hidden="true">
+      <div class="filtersInner">
+        <label id="filterLabel">Фильтровать по тегам:</label>
+        <div id="tagsContainer" class="tagsControls"></div>
+
+        <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+          <button class="btn" id="clearFilters">Сбросить фильтры</button>
+          <label style="margin-left:auto;font-size:13px;color:rgba(255,255,255,0.8)">Сортировка:</label>
+          <select id="sortSelect" style="width:160px;margin-left:8px;">
+            <option value="new">Новые сверху</option>
+            <option value="old">Старые сверху</option>
+          </select>
+        </div>
+
+        <div style="margin-top:10px;">
+          <button class="btn" id="exportPosts">Экспорт постов (JSON)</button>
+          <input id="importFile" type="file" accept="application/json" style="display:none" />
+          <button class="btn" id="importPosts">Импорт постов (JSON)</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- SETTINGS MODAL -->
+  <div id="settingsModal" class="modal" role="dialog" aria-modal="true">
+    <div class="frame settings" role="document">
+      <button class="btn" id="closeSettings" style="float:right;">Закрыть</button>
+      <h3 id="settingsTitle">Настройки</h3>
+      <div style="margin-top:10px;">
+        <label id="langLabel">Язык / Language</label>
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <button class="btn" data-lang="ru" id="langRu">Русский</button>
+          <button class="btn" data-lang="en" id="langEn">English</button>
+        </div>
+      </div>
+      <div style="margin-top:16px;">
+        <label id="uiLabel">Интерфейс</label>
+        <p class="small" id="uiNote">Только тёмная тема (фиксированная).</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ADD / EDIT POST MODAL -->
+  <div id="addModal" class="modal" role="dialog" aria-modal="true">
+    <div class="frame" role="document">
+      <button class="btn" id="closeAddModal" style="float:right;">Отмена</button>
+      <div style="padding-top:8px">
+        <h3 id="addTitle">Добавить пост (локально)</h3>
+        <form id="addPostForm">
+          <input type="hidden" id="editingId" value="" />
+          <label>Дата (YYYY-MM-DD)</label>
+          <input type="date" id="postDate" required />
+          <label>Заголовок (RU)</label>
+          <input type="text" id="postTitleRu" required />
+          <label>Заголовок (EN)</label>
+          <input type="text" id="postTitleEn" required />
+          <label>Краткий текст RU</label>
+          <textarea id="postExcerptRu" rows="2" required></textarea>
+          <label>Краткий текст EN</label>
+          <textarea id="postExcerptEn" rows="2" required></textarea>
+          <label>Полный текст RU (HTML допускается)</label>
+          <textarea id="postContentRu" rows="5" required></textarea>
+          <label>Полный текст EN (HTML допускается)</label>
+          <textarea id="postContentEn" rows="5" required></textarea>
+          <label>Теги (через запятую). Для автоматического перевода тега укажи формат ru|en, например: ЦДЖ|CDJ,Завод|Factory</label>
+          <input type="text" id="postTags" placeholder="ЦДЖ|CDJ,Завод|Factory" />
+          <label>URL картинки (опционально). Подсказка: imgs/filename.jpg</label>
+          <input type="text" id="postImage" placeholder="imgs/example.jpg or https://..." />
+          <div style="margin-top:10px;display:flex;gap:8px;">
+            <button class="btn" type="submit" id="savePostBtn">Добавить и сохранить</button>
+            <button class="btn" type="button" id="previewPostBtn">Предпросмотр</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <main>
+    <section class="hero">
+      <div class="hero-left">
+        <span class="tagline" id="heroTag">Архив: цементный завод • ЦДЖ • Призрак • Красная птица • Эрокс</span>
+        <h2 id="heroTitle">Досье и репортажи — все про опасные игрушки</h2>
+        <p id="heroDesc">В ленте — отчёты, свидетельства и архивы по ряду аномалий.</p>
+        <div style="display:flex;gap:8px;margin-top:12px;">
+          <button class="btn" onclick="scrollToFeed()" id="btnRead">Читать ленту</button>
+          <button class="btn" id="loadMoreTop">Загрузить ещё</button>
+        </div>
+      </div>
+    </section>
+
+    <div class="float-shape fs1" aria-hidden></div>
+    <div class="float-shape fs2" aria-hidden></div>
+
+    <section id="feed" class="feed" aria-live="polite"></section>
+
+    <div id="spinner" class="spinner">Ничего не загружено</div>
+  </main>
+
+  <!-- VIEW MODAL -->
+  <div id="viewModal" class="modal" role="dialog" aria-modal="true">
+    <div class="frame" role="document">
+      <button class="btn" id="closeView" style="float:right;">Закрыть</button>
+      <div id="modalContent"></div>
+    </div>
+  </div>
+
+  <footer>
+    <div id="footerText">© <strong>Аномалия Labs</strong> — Организация правительства США</div>
+  </footer>
+
+  <!-- hidden google translate element -->
+  <div id="google_translate_element" style="display:none;"></div>
+
+  <!-- fixed posts -->
+  <script src="fixed-posts.js"></script>
+
+  <!-- google translate -->
+  <script src="//translate.google.com/translate_a/element.js?cb=googleTranslateElementInit"></script>
+
+  <!-- main script -->
+  <script src="script.js"></script>
+</body>
+</html>
