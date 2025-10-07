@@ -1,683 +1,472 @@
-/* script.js */
+/* script.js
+   Firebase (compat) + Firestore posts management
+*/
 
-/* ================= Configuration & i18n ================= */
-const UI_STRINGS = {
+/* ================== UI STRINGS (i18n) ================== */
+const UI = {
   ru: {
     siteTag: "Досье по аномалиям — архивы и репортажи",
     heroTitle: "Досье и репортажи — все про опасные игрушки",
     heroDesc: "В ленте — отчёты, свидетельства и архивы по ряду аномалий.",
-    searchPlaceholder: 'Поиск...',
-    filters: 'Фильтры',
-    settings: 'Настройки',
-    addPost: 'Добавить пост',
-    loadMore: 'Загрузить ещё',
-    settingsTitle: 'Настройки',
-    langLabel: 'Язык / Language',
-    onlyDarkNote: 'Только тёмная тема (фиксированная).',
-    addTitle: 'Добавить пост (локально)',
-    viewClose: 'Закрыть',
-    spinnerLoading: 'Загрузка...',
-    spinnerNoMore: 'Больше нет материалов.',
-    noResults: 'По запросу ничего не найдено.',
-    footer: '© Аномалия Labs — Организация правительства США.'
+    searchPlaceholder: "Поиск...",
+    filters: "Фильтры",
+    settings: "Настройки",
+    addPost: "Добавить пост",
+    loadMore: "Загрузить ещё",
+    settingsTitle: "Настройки",
+    langLabel: "Язык / Language",
+    onlyDarkNote: "Только тёмная тема (фиксированная).",
+    addTitle: "Добавить пост (локально)",
+    viewClose: "Закрыть",
+    spinnerLoading: "Загрузка...",
+    spinnerNoMore: "Больше нет материалов.",
+    noResults: "По запросу ничего не найдено.",
+    footer: "© Аномалия Labs — Организация правительства США.",
+    needAdmin: "Требуются права администратора.",
+    login: "Войти",
+    logout: "Выйти",
+    register: "Зарегистрироваться",
+    noAccount: "Нет аккаунта? Зарегистрироваться",
+    haveAccount: "Уже есть аккаунт? Войти",
+    loginTitle: "Вход",
+    registerTitle: "Регистрация",
+    // NEW: Error messages
+    errorDbConnection: "Ошибка подключения к базе данных. Проверьте консоль (F12) и настройки Firebase.",
+    errorLoadingPosts: "Не удалось загрузить посты. Попробуйте обновить страницу."
   },
   en: {
     siteTag: "Anomaly Files - Archives and Reports",
     heroTitle: "Dossiers and reports – all about dangerous toys",
     heroDesc: "The feed contains reports, testimonies, and archives on a number of anomalies.",
-    searchPlaceholder: 'Search...',
-    filters: 'Filters',
-    settings: 'Settings',
-    addPost: 'Add post',
-    loadMore: 'Load more',
-    settingsTitle: 'Settings',
-    langLabel: 'Language / Язык',
-    onlyDarkNote: 'Dark theme only (fixed).',
-    addTitle: 'Add post (local)',
-    viewClose: 'Close',
-    spinnerLoading: 'Loading...',
-    spinnerNoMore: 'No more items.',
-    noResults: 'No results found.',
-    footer: '© Anomaly Labs — U.S. government organization.'
+    searchPlaceholder: "Search...",
+    filters: "Filters",
+    settings: "Settings",
+    addPost: "Add post",
+    loadMore: "Load more",
+    settingsTitle: "Settings",
+    langLabel: "Language / Язык",
+    onlyDarkNote: "Dark theme only (fixed).",
+    addTitle: "Add post (local)",
+    viewClose: "Close",
+    spinnerLoading: "Loading...",
+    spinnerNoMore: "No more items.",
+    noResults: "No results found.",
+    footer: "© Anomaly Labs — U.S. government organization.",
+    needAdmin: "Administrator privileges required.",
+    login: "Login",
+    logout: "Logout",
+    register: "Register",
+    noAccount: "No account? Register",
+    haveAccount: "Already have an account? Login",
+    loginTitle: "Login",
+    registerTitle: "Register",
+    // NEW: Error messages
+    errorDbConnection: "Database connection error. Check console (F12) and Firebase settings.",
+    errorLoadingPosts: "Failed to load posts. Please try refreshing the page."
   }
 };
 
-/* ================= Obfuscated admin password =================
-   You asked to hide the password "eroxsayloladminwl".
-   We store base64 of the reversed string and reconstruct it at runtime.
-   This is obfuscation for casual inspection (not full security).
-*/
-function getAdminPass(){
-  // base64 of 'lwnimadlolysxaore' (which is reversed password)
-  const b64 = 'bHduaW1hZGxvbHlzeGFvcmU=';
-  try {
-    const rev = atob(b64);
-    return rev.split('').reverse().join(''); // -> 'eroxsayloladminwl'
-  } catch(e){
-    return 'eroxsayloladminwl'; // fallback
-  }
-}
-
-/* ================= State & config ================= */
+/* ========== State ========== */
 let LANG = localStorage.getItem('anomaly_lang') || 'ru';
-let POSTS = []; // combined fixed + local (objects may have tags in {ru,en} or plain)
-const DISPLAY_STEP = 12;
-let offset = 0;
-let activeTags = new Set();
-let observer = null;
+let db = null, auth = null;
+let currentUser = null;
+let isAdmin = false;
+let isRegisterMode = false;
+let POSTS_CACHE = [];
+let lastVisible = null;
+const PAGE_LIMIT = 12;
+let isFetching = false;
+let hasMore = true;
 
-/* ========== DOM refs ========== */
-const feed = document.getElementById('feed');
-const spinner = document.getElementById('spinner');
-const viewModal = document.getElementById('viewModal');
-const modalContent = document.getElementById('modalContent');
-const addModal = document.getElementById('addModal');
-const settingsModal = document.getElementById('settingsModal');
-const searchInput = document.getElementById('search');
-const tagsContainer = document.getElementById('tagsContainer');
-const sortSelect = document.getElementById('sortSelect');
-const exportBtn = document.getElementById('exportPosts');
-const importBtn = document.getElementById('importPosts');
-const importFile = document.getElementById('importFile');
+/* ========== DOM refs (populated on init) ========== */
+let feedEl, spinnerEl, tagsContainerEl, searchInputEl, filtersPanelEl, sortSelectEl;
+let addPostBtnEl, addModalEl, addFormEl, closeAddModalBtn;
+let viewModalEl, modalContentEl, closeViewBtn;
+let settingsModalEl, langRuBtn, langEnBtn, settingsBtn, closeSettingsBtn;
+let authModalEl, authFormEl, closeAuthModalBtn, loginBtn;
+let adminZoneEl;
 
-/* ================= Utilities: local posts ================= */
-function loadLocalPosts(){
-  try {
-    const raw = localStorage.getItem('anomaly_user_posts_v2');
-    if(!raw) return [];
-    const arr = JSON.parse(raw);
-    if(!Array.isArray(arr)) return [];
-    return arr;
-  } catch(e){ return []; }
-}
-function saveLocalPosts(arr){
-  try {
-    localStorage.setItem('anomaly_user_posts_v2', JSON.stringify(arr));
-  } catch(e){}
-}
-
-/* ================= Google Translate integration ================= */
-function googleTranslateElementInit() {
-  new google.translate.TranslateElement({
-    pageLanguage: 'ru',
-    includedLanguages: 'en,ru',
-    autoDisplay: false
-  }, 'google_translate_element');
-}
-function setGoogleLang(lang){
-  const combo = document.querySelector('.goog-te-combo');
-  if(combo){
-    combo.value = lang;
-    combo.dispatchEvent(new Event('change'));
-  }
-}
-
-/* ================= INIT ================= */
-function init(){
-  applyLang();
-  // Load fixed posts (from fixed-posts.js); there should be window.FIXED_POSTS
-  const fixed = window.FIXED_POSTS && Array.isArray(window.FIXED_POSTS) ? window.FIXED_POSTS : [];
-  const local = loadLocalPosts() || [];
-  // Normalize: ensure user-added posts have userAdded flag, tags normalized to objects {ru,en}
-  const normLocal = local.map(p => normalizeUserPost(p));
-  POSTS = [...normLocal, ...fixed];
-  sortPosts(); // by date (default)
-  renderTagControls();
-  offset = 0;
-  feed.innerHTML = '';
-  prepareObserver();
-  loadMore();
-  attachHandlers();
-}
-document.addEventListener('DOMContentLoaded', init);
-
-/* ========== i18n UI ========== */
-function applyLang(){
-  const s = UI_STRINGS[LANG];
-  if(!s) return;
-  document.getElementById('search').placeholder = s.searchPlaceholder;
-  document.getElementById('filterToggle').textContent = s.filters;
-  document.getElementById('settingsBtn').textContent = s.settings;
-  document.getElementById('addPostBtn').textContent = s.addPost;
-  document.getElementById('loadMoreTop').textContent = s.loadMore;
-  document.getElementById('settingsTitle').textContent = s.settingsTitle;
-  document.getElementById('langLabel').textContent = s.langLabel;
-  document.getElementById('uiNote').textContent = s.onlyDarkNote;
-  document.getElementById('addTitle').textContent = s.addTitle;
-  document.getElementById('footerText').textContent = s.footer;
-}
-
-/* ========== Observer for lazy images ========== */
-function prepareObserver(){
-  if(observer) observer.disconnect();
-  observer = new IntersectionObserver((entries, obs)=>{
-    entries.forEach(e=>{
-      if(e.isIntersecting){
-        const img = e.target;
-        if(img.dataset.src){
-          img.src = img.dataset.src;
-          img.removeAttribute('data-src');
-        }
-        obs.unobserve(img);
-      }
-    });
-  }, {root:null, rootMargin:'200px', threshold:0.01});
-}
-
-/* ========== Helpers: tags normalization & rendering ========= */
+/* ================= Utilities ================== */
+function byId(id){ return document.getElementById(id); }
+function escapeHtml(s){ if(s===null||s===undefined) return ''; return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
 function normalizeTagInput(tagStr){
-  // tagStr may be 'ru|en' or simple 'tag'
-  const parts = tagStr.split('|').map(s=>s.trim()).filter(Boolean);
-  if(parts.length === 2) return {ru: parts[0], en: parts[1]};
-  // If only one, assume same for both
-  return {ru: tagStr.trim(), en: tagStr.trim()};
+  const parts = String(tagStr||'').split('|').map(x=>x.trim()).filter(Boolean);
+  if(parts.length === 2) return { ru: parts[0], en: parts[1] };
+  return { ru: tagStr.trim(), en: tagStr.trim() };
 }
+function showToast(msg){ alert(msg); }
 
-function normalizeUserPost(p){
-  const copy = Object.assign({}, p);
-  copy.userAdded = true;
-  // normalize tags: could be array of strings or already objects
-  copy.tags = (p.tags||[]).map(t=>{
-    if(typeof t === 'string') return normalizeTagInput(t);
-    if(t && typeof t === 'object') {
-      if(t.ru && t.en) return {ru: t.ru, en: t.en};
-      // if only value present
-      if(t.label) return {ru:t.label, en:t.label};
+/* ================= Firebase init ================= */
+function initializeFirebaseIfPossible(){
+  const s = UI[LANG] || UI.ru;
+  if (typeof firebase === 'undefined') {
+    spinnerEl && (spinnerEl.textContent = 'Firebase SDK not loaded');
+    return;
+  }
+  try {
+    if (!firebase.apps.length) {
+      if (typeof firebaseConfig === 'undefined') {
+        spinnerEl && (spinnerEl.textContent = 'firebaseConfig not found');
+        return;
+      }
+      firebase.initializeApp(firebaseConfig);
     }
-    return {ru: String(t), en: String(t)};
+    db = firebase.firestore();
+    auth = firebase.auth();
+    setupAuthStateListener();
+  } catch (e) {
+    console.error('initializeFirebase error', e);
+    spinnerEl && (spinnerEl.textContent = s.errorDbConnection); // Better error message
+  }
+}
+
+/* ================= Auth ================= */
+function setupAuthStateListener(){
+  if (!auth) return;
+  auth.onAuthStateChanged(async (user) => {
+    currentUser = user;
+    if(user){
+      try {
+        const doc = await db.collection('admins').doc(user.uid).get();
+        isAdmin = !!(doc.exists && doc.data().isAdmin === true);
+      } catch (e) { console.error('check admin error', e); isAdmin = false; }
+      authModalEl && authModalEl.classList.remove('open');
+    } else {
+      isAdmin = false;
+    }
+    
+    addPostBtnEl && (addPostBtnEl.style.display = isAdmin ? 'flex' : 'none');
+    adminZoneEl.style.display = isAdmin ? 'flex' : 'none';
+    
+    applyLang();
+    await resetAndLoad();
   });
-  return copy;
 }
 
-// render tag element given tag object or string
-function renderTagLabel(tag){
-  if(!tag) return '';
-  if(typeof tag === 'string') return escapeHtml(tag);
-  if(tag.ru && tag.en){
-    return escapeHtml(LANG === 'en' ? tag.en : tag.ru);
+/* ================= UI rendering ================= */
+function applyLang(){
+  const s = UI[LANG] || UI.ru;
+  byId('siteTag').textContent = s.siteTag;
+  byId('heroTitle').textContent = s.heroTitle;
+  byId('heroDesc').textContent = s.heroDesc;
+  if (searchInputEl) searchInputEl.placeholder = s.searchPlaceholder;
+  if (settingsBtn) settingsBtn.textContent = s.settings;
+  if (addPostBtnEl) addPostBtnEl.textContent = s.addPost;
+  if (byId('settingsTitle')) byId('settingsTitle').textContent = s.settingsTitle;
+  if (byId('langLabel')) byId('langLabel').textContent = s.langLabel;
+  if (byId('uiNote')) byId('uiNote').textContent = s.onlyDarkNote;
+  if (byId('addTitle')) byId('addTitle').textContent = s.addTitle;
+  byId('footerText').innerHTML = `© <strong>Anomaly Labs</strong> &mdash; ${s.footer.split('— ')[1]}`;
+
+  if(loginBtn) loginBtn.textContent = currentUser ? s.logout : s.login;
+}
+
+/* ================= Posts load/render ================= */
+async function loadPostsPage(){
+  const s = UI[LANG] || UI.ru;
+  if (!db) { spinnerEl.textContent = s.errorDbConnection; return; }
+  if (isFetching || !hasMore) return;
+  isFetching = true;
+  spinnerEl.textContent = s.spinnerLoading;
+
+  try {
+    let q = db.collection('posts').orderBy('date','desc').limit(PAGE_LIMIT);
+    if (lastVisible) q = q.startAfter(lastVisible);
+
+    const snap = await q.get();
+    if (POSTS_CACHE.length === 0 && snap.empty) { // Handle case where collection is empty
+        feedEl.innerHTML = '';
+    }
+    const newPosts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    hasMore = snap.docs.length === PAGE_LIMIT;
+    lastVisible = snap.docs.length ? snap.docs[snap.docs.length-1] : lastVisible;
+
+    POSTS_CACHE.push(...newPosts);
+    renderFeedAppend(newPosts);
+  } catch (e) {
+    console.error('loadPostsPage error', e);
+    spinnerEl.textContent = s.errorLoadingPosts; // Better error message
+  } finally {
+    isFetching = false;
+    if (spinnerEl.textContent === s.spinnerLoading) { // Only clear if it was loading
+        spinnerEl.textContent = hasMore ? '' : s.spinnerNoMore;
+    }
   }
-  // fallback
-  return escapeHtml(tag.ru || tag.en || String(tag));
 }
 
-/* ========== RENDER FEED ========== */
-function loadMore(){
-  const q = searchInput.value.toLowerCase().trim();
-  let added = 0;
-  for(let i = offset; i < POSTS.length && added < DISPLAY_STEP; i++){
-    const p = POSTS[i];
-    if(!passesFilter(p,q)) continue;
-    const card = createCard(p);
-    feed.appendChild(card);
-    added++;
-    offset = i+1;
-  }
-  if(offset >= POSTS.length) spinner.textContent = UI_STRINGS[LANG].spinnerNoMore;
-  else spinner.textContent = '';
-  if(added===0 && feed.children.length===0) spinner.textContent = UI_STRINGS[LANG].noResults;
+async function resetAndLoad(){
+  POSTS_CACHE = [];
+  lastVisible = null;
+  hasMore = true;
+  feedEl.innerHTML = '';
+  await loadPostsPage();
+  renderTagControls();
 }
 
-function createCard(post){
-  const article = document.createElement('article');
-  article.className = 'card';
-  const lang = LANG;
-  const title = (post.title && (post.title[lang] || post.title.ru)) || (typeof post.title === 'string'?post.title:'(no title)');
-  const excerpt = (post.excerpt && (post.excerpt[lang] || post.excerpt.ru)) || (typeof post.excerpt === 'string'?post.excerpt:'');
-  const imgSrc = post.image || `https://picsum.photos/seed/post-${post.id}/1200/800`;
-  const placeholder = `data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='1200' height='800'><rect width='100%' height='100%' fill='%2307080b'/><text x='50%' y='50%' font-size='36' fill='%23cccccc' text-anchor='middle'>Изображение ${encodeURIComponent(post.id)}</text></svg>`;
-
-  article.innerHTML = `
-    <div class="media"><img src="${placeholder}" data-src="${imgSrc}" alt="${escapeHtml(title)}" loading="lazy"/></div>
-    <div class="body">
-      <div class="meta">${post.date || ''}</div>
-      <div class="title">${escapeHtml(title)}</div>
-      <div class="excerpt">${escapeHtml(excerpt)}</div>
-      <div class="tags">${(post.tags||[]).map(t=>`<span class="tag">${renderTagLabel(t)}</span>`).join('')}</div>
+function createPostElement(post){
+  const title = (post.title && (post.title[LANG] || post.title.ru)) || '(no title)';
+  const excerpt = (post.excerpt && (post.excerpt[LANG] || post.excerpt.ru)) || '';
+  const wrapper = document.createElement('div');
+  wrapper.className = 'post-card';
+  wrapper.innerHTML = `
+    ${ post.image ? `<img src="${escapeHtml(post.image)}" alt="${escapeHtml(title)}"/>` : '' }
+    <h3>${escapeHtml(title)}</h3>
+    <p>${escapeHtml(excerpt)}</p>
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:0 12px 12px 12px">
+      <div style="font-size:12px;color:rgba(255,255,255,0.7)">${escapeHtml(post.date || '')}</div>
+      <div>${(post.tags||[]).map(t=>`<span class="tag">${escapeHtml( (typeof t === 'string') ? t : (t[LANG]||t.ru) )}</span>`).join('')}</div>
     </div>
   `;
-  const img = article.querySelector('img');
-  if(img) observer.observe(img);
+  wrapper.addEventListener('click', () => openViewModal(post));
 
-  article.querySelector('.media').addEventListener('click', ()=> openView(post));
-  article.querySelector('.title').addEventListener('click', ()=> openView(post));
-  return article;
+  if(isAdmin){
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn';
+    delBtn.textContent = 'Del';
+    delBtn.style.cssText = 'position:absolute; right:10px; top:10px; z-index:5; padding: 4px 8px; font-size: 12px;';
+    delBtn.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      if(!confirm(LANG==='en' ? 'Delete this post?' : 'Удалить этот пост?')) return;
+      try {
+        await db.collection('posts').doc(post.id).delete();
+        wrapper.remove();
+        POSTS_CACHE = POSTS_CACHE.filter(p=>p.id !== post.id);
+        showToast(LANG==='en' ? 'Deleted' : 'Удалено');
+      } catch (err) { console.error('delete post error', err); showToast('Delete failed'); }
+    });
+    wrapper.appendChild(delBtn);
+  }
+  return wrapper;
 }
 
-/* ========== FILTERS & SEARCH ========== */
-function passesFilter(post, q){
-  if(q){
-    const lang = LANG;
-    const title = (post.title && (post.title[lang] || post.title.ru)) || '';
-    const excerpt = (post.excerpt && (post.excerpt[lang] || post.excerpt.ru)) || '';
-    const content = (post.content && (post.content[lang] || post.content.ru)) || '';
-    const hay = (title + ' ' + excerpt + ' ' + content).toLowerCase();
-    if(!hay.includes(q.toLowerCase())) {
-      // also check tags
-      const tagMatch = (post.tags||[]).some(t => {
-        const tr = (typeof t === 'string' ? t : (t[lang] || t.ru || ''));
-        return tr.toLowerCase().includes(q.toLowerCase());
-      });
-      if(!tagMatch) return false;
-    }
-  }
-  if(activeTags.size > 0){
-    const tags = post.tags || [];
-    // check that all activeTags are present (compare by ru or en)
-    for(const at of activeTags){
-      const found = tags.some(t=>{
-        const tr = (typeof t === 'string' ? t.toLowerCase() : (t.ru && t.ru.toLowerCase()));
-        const te = (typeof t === 'string' ? t.toLowerCase() : (t.en && t.en.toLowerCase()));
-        if(tr === undefined) return false;
-        return tr === at.toLowerCase() || te === at.toLowerCase();
-      });
-      if(!found) return false;
-    }
-  }
-  return true;
+function renderFeedAppend(posts){
+  if(!Array.isArray(posts)) return;
+  posts.forEach(p => feedEl.appendChild(createPostElement(p)));
 }
 
 function renderTagControls(){
-  // collect tags from POSTS (both fixed and user)
-  const map = new Map(); // key = ru||en, value = {ru,en}
-  POSTS.forEach(p=>{
+  if(!tagsContainerEl) return;
+  const map = new Map();
+  POSTS_CACHE.forEach(p=>{
     (p.tags||[]).forEach(t=>{
-      if(typeof t === 'string'){
-        const obj = normalizeTagInput(t);
-        map.set(obj.ru + '|' + obj.en, obj);
-      } else if(t && typeof t === 'object'){
-        const key = (t.ru || t.en) + '|' + (t.en || t.ru);
-        map.set(key, {ru: t.ru || t.en, en: t.en || t.ru});
-      }
+      const obj = (typeof t === 'string') ? normalizeTagInput(t) : { ru: t.ru||'', en: t.en||'' };
+      const key = obj.ru + '|' + obj.en;
+      if (!map.has(key)) map.set(key, { ...obj, count: 0 });
+      map.get(key).count++;
     });
   });
-  const arr = Array.from(map.values()).sort((a,b)=> a.ru.localeCompare(b.ru));
-  tagsContainer.innerHTML = '';
-  arr.forEach(tag=>{
+  tagsContainerEl.innerHTML = '';
+  Array.from(map.values()).sort((a,b)=>b.count - a.count).forEach(item=>{
     const btn = document.createElement('button');
     btn.className = 'tagBtn';
-    btn.textContent = renderTagLabel(tag);
-    btn.dataset.ru = tag.ru;
-    btn.dataset.en = tag.en;
-    btn.addEventListener('click', ()=>{
-      // toggle by ru value
-      const key = tag.ru;
-      if(activeTags.has(key)) activeTags.delete(key);
-      else activeTags.add(key);
-      updateTagButtons();
-      feed.innerHTML=''; offset=0; loadMore();
+    btn.textContent = (LANG==='en' ? item.en : item.ru) + ` (${item.count})`;
+    btn.dataset.ru = item.ru;
+    btn.addEventListener('click', () => {
+      btn.classList.toggle('active');
+      filterPostsFromCache();
     });
-    tagsContainer.appendChild(btn);
-  });
-  updateTagButtons();
-}
-function updateTagButtons(){
-  document.querySelectorAll('.tagBtn').forEach(b=>{
-    const ru = b.dataset.ru;
-    if(activeTags.has(ru)) b.classList.add('active'); else b.classList.remove('active');
+    tagsContainerEl.appendChild(btn);
   });
 }
 
-/* ========== VIEW / MODAL (view, edit, delete) ========== */
-function openView(post){
-  const lang = LANG;
-  const title = post.title && (post.title[lang] || post.title.ru) || (typeof post.title==='string'?post.title:'(no title)');
-  const excerpt = post.excerpt && (post.excerpt[lang] || post.excerpt.ru) || '';
-  const content = post.content && (post.content[lang] || post.content.ru) || (typeof post.content==='string'?post.content:'');
-  const img = post.image || `https://picsum.photos/seed/post-${post.id}/1600/1000`;
-  modalContent.innerHTML = `
-    <div class="meta">Дата: ${post.date || ''} ${post.id ? '— ID:' + post.id : ''}</div>
+function filterPostsFromCache() {
+  const query = (searchInputEl.value||'').trim().toLowerCase();
+  const selectedTags = Array.from(document.querySelectorAll('#tagsContainer .tagBtn.active')).map(b => b.dataset.ru);
+  
+  const filtered = POSTS_CACHE.filter(p => {
+    const hay = [
+        (p.title && (p.title[LANG]||p.title.ru))||'',
+        (p.excerpt && (p.excerpt[LANG]||p.excerpt.ru))||'',
+        (p.content && (p.content[LANG]||p.content.ru))||''
+      ].join(' ').toLowerCase();
+
+    const matchesQuery = !query || hay.includes(query);
+    
+    const postTags = (p.tags||[]).map(t => typeof t === 'string' ? t.split('|')[0].trim() : t.ru);
+    const matchesTags = selectedTags.length === 0 || selectedTags.every(selTag => postTags.includes(selTag));
+    
+    return matchesQuery && matchesTags;
+  });
+
+  feedEl.innerHTML = '';
+  renderFeedAppend(filtered);
+}
+
+/* ================= Modals ================= */
+function openViewModal(post){
+  if(!modalContentEl || !viewModalEl) return;
+  const title = (post.title && (post.title[LANG] || post.title.ru)) || '';
+  const content = (post.content && (post.content[LANG] || post.content.ru)) || '';
+  modalContentEl.innerHTML = `
     <h2>${escapeHtml(title)}</h2>
-    <p class="excerpt">${escapeHtml(excerpt)}</p>
     <div class="full">${content}</div>
-    <div style="margin-top:12px;"><img src="${img}" alt="${escapeHtml(title)}" style="max-width:100%;border-radius:8px;"></div>
-    <div style="margin-top:10px; font-size:13px; color:rgba(255,255,255,0.75)">Теги: ${(post.tags||[]).map(t=>renderTagLabel(t)).join(', ')}</div>
-    <div style="margin-top:12px;" id="viewActions"></div>
+    ${ post.image ? `<img src="${escapeHtml(post.image)}">` : '' }
+    <div style="margin-top:8px;font-size:11px;color:rgba(255,255,255,0.5)">ID: ${post.id || '(local)'}</div>
   `;
-  const actions = document.getElementById('viewActions');
-
-  // If post is user-created -> show edit/delete (with password)
-  if(post.userAdded){
-    const editBtn = document.createElement('button'); editBtn.className='btn'; editBtn.textContent = 'Редактировать';
-    const editImgBtn = document.createElement('button'); editImgBtn.className='btn'; editImgBtn.textContent = 'Изменить картинку';
-    const deleteBtn = document.createElement('button'); deleteBtn.className='btn'; deleteBtn.textContent = 'Удалить пост';
-    actions.appendChild(editBtn); actions.appendChild(editImgBtn); actions.appendChild(deleteBtn);
-
-    editBtn.addEventListener('click', ()=>{
-      // open addModal in edit mode (prefill)
-      openEditPost(post);
-    });
-
-    editImgBtn.addEventListener('click', ()=>{
-      const newUrl = prompt('Новый URL картинки:', post.image || '');
-      if(newUrl !== null){
-        // Update in localStorage
-        post.image = newUrl;
-        persistUserPost(post);
-        rebuildPostsAndRefresh();
-        openView(post);
-      }
-    });
-
-    deleteBtn.addEventListener('click', ()=>{
-      // require admin password
-      const p = prompt('Введите пароль администратора для удаления:');
-      if(p === getAdminPass()){
-        // delete
-        const local = loadLocalPosts();
-        const remain = local.filter(x=> x.id !== post.id);
-        saveLocalPosts(remain);
-        rebuildPostsAndRefresh();
-        closeView();
-        alert('Пост удалён.');
-      } else {
-        alert('Неверный пароль. Удаление отменено.');
-      }
-    });
-  }
-
-  // For fixed posts, optionally allow "report" or "bookmark" (no persistence)
-  else {
-    const note = document.createElement('div'); note.className='small-note'; note.textContent = 'Это зафиксированный системный пост (не может быть удалён).';
-    actions.appendChild(note);
-  }
-
-  viewModal.classList.add('open');
-  window.scrollTo({top:0, behavior:'smooth'});
-}
-function closeView(){ viewModal.classList.remove('open'); }
-
-function openEditPost(post){
-  // require admin password to enter edit mode
-  const p = prompt('Введите пароль администратора для редактирования поста:');
-  if(p !== getAdminPass()){
-    alert('Неверный пароль. Редактирование недоступно.');
-    return;
-  }
-  // fill form
-  document.getElementById('editingId').value = post.id;
-  document.getElementById('postDate').value = post.date || new Date().toISOString().slice(0,10);
-  document.getElementById('postTitleRu').value = post.title?.ru || '';
-  document.getElementById('postTitleEn').value = post.title?.en || '';
-  document.getElementById('postExcerptRu').value = post.excerpt?.ru || '';
-  document.getElementById('postExcerptEn').value = post.excerpt?.en || '';
-  document.getElementById('postContentRu').value = post.content?.ru || '';
-  document.getElementById('postContentEn').value = post.content?.en || '';
-  // tags: present as ru|en,comma separated
-  const tagsStr = (post.tags||[]).map(t=>{
-    if(typeof t === 'string') return t;
-    return `${t.ru}|${t.en}`;
-  }).join(',');
-  document.getElementById('postTags').value = tagsStr;
-  document.getElementById('postImage').value = post.image || '';
-  addModal.classList.add('open');
+  viewModalEl.classList.add('open');
 }
 
-/* ========== Add new post (and edit) ========== */
-function openAdd(){
-  // require admin password
-  const pass = prompt('Введите пароль администратора (требуется для добавления постов):');
-  if(pass !== getAdminPass()){
-    alert('Неверный пароль. Доступ запрещён.');
-    return;
-  }
-  // clear editing id
-  document.getElementById('editingId').value = '';
-  addModal.classList.add('open');
-  document.getElementById('postDate').value = new Date().toISOString().slice(0,10);
-}
-function closeAdd(){ addModal.classList.remove('open'); document.getElementById('addPostForm').reset(); }
-
-function handleAdd(e){
+/* ================= Admin Actions ================= */
+async function handleAddPostSubmit(e){
   e.preventDefault();
-  const editingId = document.getElementById('editingId').value;
-  const date = document.getElementById('postDate').value;
-  const titleRu = document.getElementById('postTitleRu').value.trim();
-  const titleEn = document.getElementById('postTitleEn').value.trim();
-  const exRu = document.getElementById('postExcerptRu').value.trim();
-  const exEn = document.getElementById('postExcerptEn').value.trim();
-  const contRu = document.getElementById('postContentRu').value.trim();
-  const contEn = document.getElementById('postContentEn').value.trim();
-  const tagsRaw = document.getElementById('postTags').value;
-  const tags = tagsRaw.split(',').map(s=>s.trim()).filter(Boolean).map(normalizeTagInput);
-  const image = document.getElementById('postImage').value.trim() || null;
-
-  if(!date || !titleRu || !titleEn) return alert('Заполните дату и заголовки');
-
-  if(editingId){
-    // edit existing local post -> must require admin password again
-    const pass = prompt('Введите пароль администратора для сохранения изменений:');
-    if(pass !== getAdminPass()){
-      alert('Неверный пароль. Сохранение отменено.');
-      return;
-    }
-    const local = loadLocalPosts();
-    const idx = local.findIndex(p=> String(p.id) === String(editingId));
-    if(idx === -1){ alert('Не удалось найти пост для редактирования.'); return; }
-    local[idx] = {
-      ...local[idx],
-      id: Number(editingId),
-      date,
-      title:{ru:titleRu, en:titleEn},
-      excerpt:{ru:exRu, en:exEn},
-      content:{ru:contRu, en:contEn},
-      tags,
-      image
-    };
-    saveLocalPosts(local);
-    rebuildPostsAndRefresh();
-    closeAdd();
-    alert('Пост обновлён.');
-    return;
-  }
-
-  // new post
-  const newId = Date.now() + Math.floor(Math.random()*1000);
-  const newPost = {
-    id: newId,
-    date,
-    title:{ru:titleRu, en:titleEn},
-    excerpt:{ru:exRu, en:exEn},
-    content:{ru:contRu, en:contEn},
-    tags,
-    image,
-    userAdded: true
+  if(!isAdmin) { showToast(UI[LANG].needAdmin); return; }
+  const payload = {
+    date: byId('postDate').value,
+    title: { ru: byId('postTitleRu').value.trim(), en: byId('postTitleEn').value.trim() },
+    excerpt: { ru: byId('postExcerptRu').value.trim(), en: byId('postExcerptEn').value.trim() },
+    content: { ru: byId('postContentRu').value.trim(), en: byId('postContentEn').value.trim() },
+    tags: byId('postTags').value.trim() ? byId('postTags').value.split(',').map(t=>normalizeTagInput(t.trim())) : [],
+    image: byId('postImage').value.trim() || null,
+    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    createdBy: currentUser ? currentUser.uid : null
   };
-  const local = loadLocalPosts();
-  local.unshift(newPost);
-  saveLocalPosts(local);
-  rebuildPostsAndRefresh();
-  closeAdd();
-  alert('Пост добавлен.');
+  if(!payload.date || !payload.title.ru) { showToast('Заполните дату и заголовок RU'); return; }
+  try {
+    const ref = await db.collection('posts').add(payload);
+    showToast('Пост добавлен. Перезагрузка...');
+    resetAndLoad();
+    addFormEl.reset();
+    addModalEl.classList.remove('open');
+  } catch (err) { console.error('add post error', err); showToast('Add failed'); }
 }
 
-/* persist helper */
-function persistUserPost(post){
-  const local = loadLocalPosts();
-  const idx = local.findIndex(p=> p.id === post.id);
-  if(idx >= 0) local[idx] = post;
-  else local.unshift(post);
-  saveLocalPosts(local);
-}
-
-/* rebuild POSTS array and refresh */
-function rebuildPostsAndRefresh(){
-  const fixed = window.FIXED_POSTS || [];
-  const local = loadLocalPosts().map(normalizeUserPost);
-  POSTS = [...local, ...fixed];
-  sortPosts();
-  renderTagControls();
-  feed.innerHTML=''; offset=0; loadMore();
-}
-
-/* ========== Sorting & Export/Import ========== */
-function sortPosts(){
-  const mode = sortSelect ? sortSelect.value : 'new';
-  POSTS.sort((a,b)=>{
-    const da = a.date || '';
-    const db = b.date || '';
-    if(da === db){
-      return (b.id || 0) - (a.id || 0);
-    }
-    // descending by date if new
-    if(mode === 'new') return db.localeCompare(da);
-    return da.localeCompare(db);
-  });
-}
-
-/* export user posts */
-function exportUserPosts(){
-  const local = loadLocalPosts();
-  const data = JSON.stringify(local, null, 2);
-  const blob = new Blob([data], {type: 'application/json'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'anomaly_user_posts.json';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-/* import user posts */
-function importUserPosts(file){
+function handleImportFile(file){
+  if(!file || !isAdmin) return;
   const reader = new FileReader();
-  reader.onload = (ev)=>{
+  reader.onload = async (ev) => {
     try {
       const arr = JSON.parse(ev.target.result);
-      if(!Array.isArray(arr)) throw new Error('Invalid JSON');
-      // basic validation and assign ids if missing
-      const normalized = arr.map(p=>{
-        return {
-          id: p.id || Date.now() + Math.floor(Math.random()*1000),
+      if(!confirm(`Импортировать ${arr.length} элементов?`)) return;
+      for(const p of arr){
+        const payload = {
           date: p.date || new Date().toISOString().slice(0,10),
-          title: p.title || {ru:p.titleRu||'Imported', en:p.titleEn||p.titleRu||'Imported'},
-          excerpt: p.excerpt || {ru:p.excerptRu||'', en:p.excerptEn||''},
-          content: p.content || {ru:p.contentRu||'', en:p.contentEn||''},
-          tags: (p.tags||[]).map(t => typeof t === 'string' ? normalizeTagInput(t) : (t.ru ? t : normalizeTagInput(String(t)))),
+          title: p.title || { ru: 'Imported', en: 'Imported' },
+          excerpt: p.excerpt || { ru: '', en: '' },
+          content: p.content || { ru: '', en: '' },
+          tags: (p.tags||[]).map(t => typeof t === 'string' ? normalizeTagInput(t) : t),
           image: p.image || null,
-          userAdded: true
+          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+          createdBy: currentUser ? currentUser.uid : null
         };
-      });
-      // save after admin password check
-      const pass = prompt('Введите пароль администратора для импорта постов:');
-      if(pass !== getAdminPass()){ alert('Неверный пароль. Импорт отменён.'); return; }
-      saveLocalPosts(normalized);
-      rebuildPostsAndRefresh();
-      alert('Импорт завершён.');
-    } catch(e){
-      alert('Ошибка импорта: ' + e.message);
-    }
+        await db.collection('posts').add(payload);
+      }
+      showToast(`Импорт завершён. Перезагрузка...`);
+      resetAndLoad();
+    } catch (err) { console.error('import error', err); showToast('Import failed: ' + err.message); }
   };
   reader.readAsText(file);
 }
 
-/* ========== UI Handlers & events ========= */
+/* ================= UI attach handlers ================= */
 function attachHandlers(){
-  document.getElementById('loadMoreTop').addEventListener('click', ()=> loadMore());
-  document.getElementById('filterToggle').addEventListener('click', ()=> {
-    const p = document.getElementById('filtersPanel');
-    p.classList.toggle('hidden');
-    p.setAttribute('aria-hidden', p.classList.contains('hidden') ? 'true' : 'false');
-  });
-  document.getElementById('clearFilters').addEventListener('click', ()=> { activeTags.clear(); renderTagControls(); feed.innerHTML=''; offset=0; loadMore(); });
-  document.getElementById('addPostBtn').addEventListener('click', ()=> openAdd());
-  document.getElementById('closeAddModal').addEventListener('click', ()=> closeAdd());
-  document.getElementById('addPostForm').addEventListener('submit', handleAdd);
-  document.getElementById('settingsBtn').addEventListener('click', ()=> { settingsModal.classList.add('open'); updateLangButtons(); });
-  document.getElementById('closeSettings').addEventListener('click', ()=> settingsModal.classList.remove('open'));
-  document.getElementById('langRu').addEventListener('click', ()=> { setLang('ru'); updateLangButtons(); });
-  document.getElementById('langEn').addEventListener('click', ()=> { setLang('en'); updateLangButtons(); });
-
-  document.getElementById('closeView').addEventListener('click', ()=> closeView());
-  viewModal.addEventListener('click', (e)=> { if(e.target === viewModal) closeView(); });
-  addModal.addEventListener('click', (e)=> { if(e.target === addModal) closeAdd(); });
-  settingsModal.addEventListener('click', (e)=> { if(e.target === settingsModal) settingsModal.classList.remove('open'); });
-
-  document.getElementById('search').addEventListener('input', ()=> { feed.innerHTML=''; offset=0; loadMore(); });
-  if(sortSelect) sortSelect.addEventListener('change', ()=> { sortPosts(); feed.innerHTML=''; offset=0; loadMore(); });
-
-  // export/import
-  if(exportBtn) exportBtn.addEventListener('click', ()=> exportUserPosts());
-  if(importBtn) importBtn.addEventListener('click', ()=> importFile.click());
-  if(importFile) importFile.addEventListener('change', (ev)=> {
-    const f = ev.target.files && ev.target.files[0];
-    if(f) importUserPosts(f);
-    importFile.value = '';
+  searchInputEl.addEventListener('input', filterPostsFromCache);
+  
+  byId('clearFilters').addEventListener('click', () => {
+    searchInputEl.value = '';
+    document.querySelectorAll('#tagsContainer .tagBtn.active').forEach(btn => btn.classList.remove('active'));
+    filterPostsFromCache();
   });
 
-  // preview button
-  const previewBtn = document.getElementById('previewPostBtn');
-  if(previewBtn){
-    previewBtn.addEventListener('click', ()=>{
-      // gather fields and open temporary view (no save)
-      const date = document.getElementById('postDate').value;
-      const titleRu = document.getElementById('postTitleRu').value.trim();
-      const titleEn = document.getElementById('postTitleEn').value.trim();
-      const exRu = document.getElementById('postExcerptRu').value.trim();
-      const exEn = document.getElementById('postExcerptEn').value.trim();
-      const contRu = document.getElementById('postContentRu').value.trim();
-      const contEn = document.getElementById('postContentEn').value.trim();
-      const tagsRaw = document.getElementById('postTags').value;
-      const tags = tagsRaw.split(',').map(s=>s.trim()).filter(Boolean).map(normalizeTagInput);
-      const image = document.getElementById('postImage').value.trim() || null;
-      const tmp = {
-        id: 'preview',
-        date,
-        title:{ru:titleRu||'(no title ru)', en:titleEn||'(no title en)'},
-        excerpt:{ru:exRu, en:exEn},
-        content:{ru:contRu, en:contEn},
-        tags,
-        image
-      };
-      openView(tmp);
-    });
-  }
+  settingsBtn.addEventListener('click', () => settingsModalEl.classList.add('open'));
+  closeSettingsBtn.addEventListener('click', () => settingsModalEl.classList.remove('open'));
 
-  // infinite scroll
-  window.addEventListener('scroll', onScroll);
-}
-
-/* ========== Helpers ========== */
-function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"})[c]); }
-function onScroll(){
-  const nearBottom = window.innerHeight + window.scrollY >= document.body.offsetHeight - 700;
-  if(nearBottom) loadMore();
-}
-function scrollToFeed(){ document.getElementById('feed').scrollIntoView({behavior:'smooth', block:'start'}); }
-
-function updateLangButtons(){
-  document.querySelectorAll('[data-lang]').forEach(b=>{
-    if(b.dataset.lang === LANG) b.style.background = 'linear-gradient(90deg,#7a2bff,#00d4ff)';
-    else b.style.background = '';
+  loginBtn.addEventListener('click', () => {
+    if (currentUser) auth.signOut();
+    else authModalEl.classList.add('open');
   });
+  closeAuthModalBtn.addEventListener('click', () => authModalEl.classList.remove('open'));
+  
+  const authTitle = byId('authTitle'), authSubmitBtn = byId('authSubmitBtn'), toggleAuthModeBtn = byId('toggleAuthMode'), authMessage = byId('authMessage');
+  toggleAuthModeBtn.addEventListener('click', () => {
+    isRegisterMode = !isRegisterMode;
+    const s = UI[LANG];
+    authTitle.textContent = isRegisterMode ? s.registerTitle : s.loginTitle;
+    authSubmitBtn.textContent = isRegisterMode ? s.register : s.login;
+    toggleAuthModeBtn.textContent = isRegisterMode ? s.haveAccount : s.noAccount;
+    authMessage.textContent = '';
+  });
+
+  authFormEl.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    authMessage.textContent = '';
+    try {
+      if (isRegisterMode) await auth.createUserWithEmailAndPassword(byId('authEmail').value, byId('authPassword').value);
+      else await auth.signInWithEmailAndPassword(byId('authEmail').value, byId('authPassword').value);
+    } catch (error) { authMessage.textContent = error.message; }
+  });
+
+  addPostBtnEl.addEventListener('click', () => {
+    if(!isAdmin) { showToast(UI[LANG].needAdmin); return; }
+    addModalEl.classList.add('open');
+    byId('postDate').valueAsDate = new Date();
+  });
+  closeAddModalBtn.addEventListener('click', () => addModalEl.classList.remove('open'));
+  addFormEl.addEventListener('submit', handleAddPostSubmit);
+
+  byId('importPosts').addEventListener('click', () => byId('importFile').click());
+  byId('importFile').addEventListener('change', (e) => handleImportFile(e.target.files[0]));
+  byId('exportPosts').addEventListener('click', async () => {
+    if(!isAdmin) { showToast(UI[LANG].needAdmin); return; }
+    const snap = await db.collection('posts').orderBy('date','desc').get();
+    const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(arr, null, 2)], { type: 'application/json' })); 
+    a.download = 'posts_export.json';
+    a.click(); URL.revokeObjectURL(a.href);
+  });
+
+  closeViewBtn.addEventListener('click', () => viewModalEl.classList.remove('open'));
+  [viewModalEl, settingsModalEl, authModalEl, addModalEl].forEach(modal => {
+      modal.addEventListener('click', (e) => { if(e.target === modal) modal.classList.remove('open'); });
+  });
+
+  langRuBtn.addEventListener('click', () => setLang('ru'));
+  langEnBtn.addEventListener('click', () => setLang('en'));
 }
 
-/* ========== Set language (local UI + try google translate) ========== */
+/* ================= Language change ================= */
 function setLang(l){
   LANG = l;
   localStorage.setItem('anomaly_lang', l);
   applyLang();
-  updateLangButtons();
-  // try to switch Google Translate combo (will translate DOM)
-  if(window.google && document.querySelector('.goog-te-combo')) {
-    setGoogleLang(l);
-  }
-  // re-render feed UI texts & tags
-  feed.innerHTML=''; offset=0; loadMore();
-}
-
-/* ========== Persist / rebuild helpers ========== */
-function rebuildFromStorage(){
-  const fixed = window.FIXED_POSTS || [];
-  const local = loadLocalPosts().map(normalizeUserPost);
-  POSTS = [...local, ...fixed];
-  sortPosts();
+  feedEl.innerHTML = '';
+  renderFeedAppend(POSTS_CACHE);
   renderTagControls();
-  feed.innerHTML=''; offset=0; loadMore();
 }
 
-/* ========== Init event wiring for closures (after definitions) ========== */
-document.addEventListener('DOMContentLoaded', ()=> {
-  updateLangButtons();
-});
+/* ================= Init ================= */
+function init(){
+  feedEl = byId('feed');
+  spinnerEl = byId('spinner');
+  tagsContainerEl = byId('tagsContainer');
+  searchInputEl = byId('search');
+  filtersPanelEl = byId('filtersPanel');
+  sortSelectEl = byId('sortSelect');
+  addPostBtnEl = byId('addPostBtn');
+  addModalEl = byId('addModal');
+  addFormEl = byId('addPostForm');
+  closeAddModalBtn = byId('closeAddModal');
+  viewModalEl = byId('viewModal');
+  modalContentEl = byId('modalContent');
+  closeViewBtn = byId('closeView');
+  settingsModalEl = byId('settingsModal');
+  settingsBtn = byId('settingsBtn');
+  closeSettingsBtn = byId('closeSettings');
+  authModalEl = byId('authModal');
+  authFormEl = byId('authForm');
+  closeAuthModalBtn = byId('closeAuthModal');
+  loginBtn = byId('loginBtn');
+  langRuBtn = byId('langRu');
+  langEnBtn = byId('langEn');
+  adminZoneEl = document.querySelector('.admin-zone');
+
+  applyLang();
+  attachHandlers();
+  initializeFirebaseIfPossible();
+
+  if(typeof firebase === 'undefined') {
+    spinnerEl.textContent = 'Firebase SDK not loaded. Check scripts.';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', init);
